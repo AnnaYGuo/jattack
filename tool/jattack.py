@@ -13,6 +13,7 @@ from jsonargparse import CLI
 from natsort import natsorted
 from pathlib import Path
 from seutil.bash import BashError
+from seutil.powershell import PowerShellError
 from typing import List, NamedTuple, Tuple
 
 # Constants.
@@ -150,13 +151,14 @@ class Args:
                 f"Only one java environment is provided: {self.java_envs[0]}."
                 " Differential testing will not work. Only crash will be reported.")
         #fi
+        file_extension = ".exe" if os.name == 'nt' else ""
         for java_env in self.java_envs:
-            if not (java_env.java_home / "bin" / "java").is_file():
+            if not (java_env.java_home / "bin" / f"java{file_extension}").is_file():
                 raise ValueError(
                     "java not found in given java home under test: "
                     f"{java_env.java_home / 'bin'}")
             #fi
-            if not (java_env.java_home / "bin" / "javac").is_file():
+            if not (java_env.java_home / "bin" / f"javac{file_extension}").is_file():
                 raise ValueError(
                     "javac not found in given java home under test: "
                     f"{java_env.java_home / 'bin'}")
@@ -165,8 +167,8 @@ class Args:
 
         # Use the first java environment to compile and run JAttack
         # itself
-        self.javac = self.java_envs[0].java_home / "bin" / "javac"
-        self.java = self.java_envs[0].java_home / "bin" / "java"
+        self.javac = self.java_envs[0].java_home / "bin" / f"javac{file_extension}"
+        self.java = self.java_envs[0].java_home / "bin" / f"java{file_extension}"
 
         # Set up directories
         self.tmpl_dir = DOT_DIR / self.clz
@@ -219,10 +221,10 @@ def exceute_and_test(
 
         # Compile
         try:
-            bash_run(
+            shell_run(
                 f"{javac} -cp {cp} {gen_src} -d {build_dir}",
                 check_returncode=0)
-        except BashError as e:
+        except (BashError, PowerShellError) as e:
             all_tests_pass = False
             logger.error(e)
             print_not_ok(
@@ -238,13 +240,14 @@ def exceute_and_test(
             java = je.java_home / "bin" / "java"
             opts= " ".join(je.java_opts)
             output_file = output_dir_per_gen / f"java_env{je_i}.txt"
-            res = bash_run(
+            res = shell_run(
                 f"{java} -cp {cp}" +\
                 " " + " ".join(JAVA_OPTS) +\
                 f" {opts}"
                 f" -XX:ErrorFile={output_dir_per_gen}/hs_err_pid%p.log"
                 f" -XX:ReplayDataFile={output_dir_per_gen}/replay_pid%p.log"
-                f" {gen_clz} --outFilePath='{output_file}'"
+                # f" {gen_clz} --outFilePath='"{output_file}'"
+                f" {gen_clz} --outFilePath=\"{output_file}\""
             )
             logger.info(res.stdout)
             if res.returncode != 0:
@@ -315,7 +318,7 @@ def generate(
 
     # Run JAttack
     try:
-        res = bash_run(
+        res = shell_run(
             f"{java} -javaagent:{jattack_jar} -cp {tmpl_classpath}" +\
             " " + " ".join(JAVA_OPTS) +\
             " " + " ".join(extra_java_opts) +\
@@ -331,7 +334,7 @@ def generate(
             check_returncode=0)
         print(res.stdout, end="")
         print(res.stderr, end="")
-    except BashError as e:
+    except (BashError, PowerShellError) as e:
         logger.error(e)
         raise BailOutError("Generating from template failed")
     #yrt
@@ -356,10 +359,10 @@ def compile_template(src: Path, build_dir: Path, javac: Path) -> None:
     try:
         su.io.rm(build_dir)
         su.io.mkdir(build_dir, parents=True)
-        bash_run(
+        shell_run(
             f"{javac} -cp {JATTACK_JAR} {src} -d {build_dir}",
             check_returncode=0)
-    except BashError as e:
+    except (BashError, PowerShellError) as e:
         logger.error(e)
         raise BailOutError("Compiling template failed")
     #yrt
@@ -401,7 +404,7 @@ def print_ok(test_number: int, desc: str) -> None:
     print(f"ok {test_number} - {desc}")
 #fed
 
-def bash_run(
+def shell_run(
     command: str,
     check_returncode: int = None,
     timeout: int = None
@@ -409,9 +412,27 @@ def bash_run(
     """
     Run a command in bash.
     """
-    logger.debug(f"Bash: {command}")
-    res = su.bash.run(command, check_returncode=check_returncode,
-    timeout=timeout)
+    if os.name == "nt":
+        print(command)
+        command_lines = command.split(' -')
+        new_command = []
+        new_command.append(f"'{command_lines[0]}'")
+        command = '-' + " -".join(command_lines[1:])
+        command_lines = command.split(' ')
+        for token in command_lines:
+            # token = "\\'".join(token.split("'"))
+            new_command.append(f"'{token}'")
+            # new_command.append(f"'-{token.split(' ')[0]}'")
+            # new_command.append(f"'{' '.join(token.split(' ')[1:])}'")
+        new_command = " ".join(new_command)
+        new_command = f'"& {new_command}"'
+        logger.debug(f"PowerShell: {new_command}")
+        res = su.powershell.run(new_command, check_returncode=check_returncode,
+        timeout=timeout)
+    else:
+        logger.debug(f"Bash: {command}")
+        res = su.bash.run(command, check_returncode=check_returncode,
+        timeout=timeout)
     #logger.info(res.stdout)
     #logger.error(res.stderr)
     return res
