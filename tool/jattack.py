@@ -12,8 +12,8 @@ from enum import Enum
 from jsonargparse import CLI
 from natsort import natsorted
 from pathlib import Path
-from seutil.bash import BashError
-from seutil.powershell import PowerShellError
+# from seutil.bash import BashError
+# from seutil.powershell import PowerShellError
 from typing import List, NamedTuple, Tuple
 
 # Constants.
@@ -91,6 +91,43 @@ class DiffBugData(BugData):
         self.type = BugType.DIFF
     #fed
 #ssalc
+
+class ShellError(RuntimeError):
+    def __init__(
+        self,
+        cmd: str,
+        completed_process: subprocess.CompletedProcess,
+        check_returncode: int,
+    ):
+        self.cmd = cmd
+        self.returncode = completed_process.returncode
+        self.check_returncode = check_returncode
+        self.stdout = completed_process.stdout
+        self.stderr = completed_process.stderr
+
+    def __str__(self) -> str:
+        s = f"Command '{self.cmd}' failed with return code {self.returncode}, expected {self.check_returncode}.\n"
+        show_full_output = os.environ.get("SEUTIL_SHOW_FULL_OUTPUT", "1") not in {
+            "0",
+            "false",
+            "False",
+        }
+        if show_full_output:
+            s += f"STDOUT:\n{self.stdout}\n"
+            s += f"STDERR:\n{self.stderr}\n"
+        else:
+            if len(self.stdout) > 800:
+                s += f"STDOUT (truncated):\n{self.stdout[:400]}...{self.stdout[-400:]}\n"
+            else:
+                s += f"STDOUT:\n{self.stdout}\n"
+            if len(self.stderr) > 800:
+                s += f"STDERR (truncated):\n{self.stderr[:400]}...{self.stderr[-400:]}\n"
+            else:
+                s += f"STDERR:\n{self.stderr}\n"
+        return s
+
+    def __repr__(self) -> str:
+        return self.__str__()
 
 class Args:
     def __init__(
@@ -222,9 +259,11 @@ def exceute_and_test(
         # Compile
         try:
             shell_run(
-                f"{javac} -cp {cp} {gen_src} -d {build_dir}",
-                check_returncode=0)
-        except (BashError, PowerShellError) as e:
+                # f"{javac} -cp {cp} {gen_src} -d {build_dir}",
+                # check_returncode=0)
+                ["javac", "cp", f"{cp}", f"{gen_src}", "-d", f"{build_dir}"]
+            )
+        except (ShellError) as e:
             all_tests_pass = False
             logger.error(e)
             print_not_ok(
@@ -238,16 +277,26 @@ def exceute_and_test(
         crashed_jes = []
         for je_i, je in enumerate(java_envs):
             java = je.java_home / "bin" / "java"
-            opts= " ".join(je.java_opts)
+            # opts= " ".join(je.java_opts)
             output_file = output_dir_per_gen / f"java_env{je_i}.txt"
             res = shell_run(
-                f"{java} -cp {cp}" +\
-                " " + " ".join(JAVA_OPTS) +\
-                f" {opts}"
-                f" -XX:ErrorFile={output_dir_per_gen}/hs_err_pid%p.log"
-                f" -XX:ReplayDataFile={output_dir_per_gen}/replay_pid%p.log"
-                # f" {gen_clz} --outFilePath='"{output_file}'"
-                f" {gen_clz} --outFilePath=\"{output_file}\""
+                # f"{java} -cp {cp}" +\
+                # " " + " ".join(JAVA_OPTS) +\
+                # f" {opts}"
+                # f" -XX:ErrorFile={output_dir_per_gen}/hs_err_pid%p.log"
+                # f" -XX:ReplayDataFile={output_dir_per_gen}/replay_pid%p.log"
+                # # f" {gen_clz} --outFilePath='"{output_file}'"
+                # f" {gen_clz} --outFilePath=\"{output_file}\""
+                [
+                    "java", "-cp", f"{cp}"
+                ] +
+                JAVA_OPTS + je.java_opts +
+                    # f"{opts}",
+                [
+                    f"-XX:ErrorFile={output_dir_per_gen}/hs_err_pid%p.log",
+                    f"-XX:ReplayDataFile={output_dir_per_gen}/replay_pid%p.log",
+                    f"{gen_clz}" f"--outFilePath=\'{output_file}\'"
+                ]
             )
             logger.info(res.stdout)
             if res.returncode != 0:
@@ -319,22 +368,37 @@ def generate(
     # Run JAttack
     try:
         res = shell_run(
-            f"{java} -javaagent:{jattack_jar} -cp {tmpl_classpath}" +\
-            " " + " ".join(JAVA_OPTS) +\
-            " " + " ".join(extra_java_opts) +\
-            f" jattack.driver.Driver"
-            f" --clzName={clz}"
-            f" --nOutputs={n_gen}"
-            f" --srcPath={src}"
-            f" --nInvocations={n_itrs}" +\
-            (f" --seed={seed}" if seed else "") +\
-            f" --outputDir={gen_dir}" +\
-            f" --outputPostfix={gen_suffix}"
-            " " + " ".join(args),
-            check_returncode=0)
+            # f"{java} -javaagent:{jattack_jar} -cp {tmpl_classpath}" +\
+            # " " + " ".join(JAVA_OPTS) +\
+            # " " + " ".join(extra_java_opts) +\
+            # f" jattack.driver.Driver"
+            # f" --clzName={clz}"
+            # f" --nOutputs={n_gen}"
+            # f" --srcPath={src}"
+            # f" --nInvocations={n_itrs}" +\
+            # (f" --seed={seed}" if seed else "") +\
+            # f" --outputDir={gen_dir}" +\
+            # f" --outputPostfix={gen_suffix}"
+            # " " + " ".join(args),
+            [
+                f"{java}", f"-javaagent:{jattack_jar}", "-cp", f"{tmpl_classpath}",
+            ] +
+            #JAVA_OPTS + #extra_java_opts +
+            [
+                "jattack.driver.Driver",
+                f"--clzName={clz}",
+                f"--nOutputs={n_gen}",
+                f"--srcPath={src}",
+                f"--nInvocations={n_itrs}",
+                (f"--seed={seed}" if seed else ""),
+                f"--outputDir={gen_dir}",
+                f"--outputPostfix={gen_suffix}"
+            ] #+ args
+            # check_returncode=0)
+        )
         print(res.stdout, end="")
         print(res.stderr, end="")
-    except (BashError, PowerShellError) as e:
+    except (ShellError) as e:
         logger.error(e)
         raise BailOutError("Generating from template failed")
     #yrt
@@ -360,9 +424,11 @@ def compile_template(src: Path, build_dir: Path, javac: Path) -> None:
         su.io.rm(build_dir)
         su.io.mkdir(build_dir, parents=True)
         shell_run(
-            f"{javac} -cp {JATTACK_JAR} {src} -d {build_dir}",
-            check_returncode=0)
-    except (BashError, PowerShellError) as e:
+            # f"{javac} -cp {JATTACK_JAR} {src} -d {build_dir}",
+            # check_returncode=0
+            [f"{javac}", "-cp", f"{JATTACK_JAR}", f"{src}", "-d", f"{build_dir}"]
+        )
+    except (ShellError) as e:
         logger.error(e)
         raise BailOutError("Compiling template failed")
     #yrt
@@ -414,27 +480,38 @@ def shell_run(
     """
     if os.name == "nt":
         print(command)
-        command_lines = command.split(' -')
-        new_command = []
-        new_command.append(f"'{command_lines[0]}'")
-        command = '-' + " -".join(command_lines[1:])
-        command_lines = command.split(' ')
-        for token in command_lines:
-            # token = "\\'".join(token.split("'"))
-            new_command.append(f"'{token}'")
-            # new_command.append(f"'-{token.split(' ')[0]}'")
-            # new_command.append(f"'{' '.join(token.split(' ')[1:])}'")
-        new_command = " ".join(new_command)
-        new_command = f'"& {new_command}"'
-        logger.debug(f"PowerShell: {new_command}")
+        # cmd_str = "powershell -Command" +'\\\"' + "& "
+        cmd_arr_str = ""
+        for token in command:
+            cmd_arr_str += f"'{token}' "
+        cmd_str = "powershell -Command " +'\\\"' + "& " + cmd_arr_str + '\\\"'
+        print(cmd_str)
+        # res = subprocess.Popen(f"powershell -Command {cmd_str}", shell=True)
+
+        # command_lines = command.split(' -')
+        # new_command = []
+        # new_command.append(f"'{command_lines[0]}'")
+        # command = '-' + " -".join(command_lines[1:])
+        # command_lines = command.split(' ')
+        # for token in command_lines:
+        #     # token = "\\'".join(token.split("'"))
+        #     new_command.append(f"'{token}'")
+        #     # new_command.append(f"'-{token.split(' ')[0]}'")
+        #     # new_command.append(f"'{' '.join(token.split(' ')[1:])}'")
+        # new_command = " ".join(new_command)
+        # new_command = f'"& {new_command}"'
+        # logger.debug(f"PowerShell: {new_command}")
         res = su.powershell.run(new_command, check_returncode=check_returncode,
         timeout=timeout)
     else:
         logger.debug(f"Bash: {command}")
         res = su.bash.run(command, check_returncode=check_returncode,
         timeout=timeout)
+        # res = subprocess.Popen(["bash"] + command)
     #logger.info(res.stdout)
     #logger.error(res.stderr)
+    if check_returncode is not None and res.returncode != check_returncode:
+        raise PowerShellError(command, res, check_returncode)
     return res
 #fed
 
